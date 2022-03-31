@@ -172,6 +172,8 @@ class PArray:
         Args:
             array: :class:`cupy.ndarray` or :class:`numpy.array` object
 
+        Warning: this will swap pointer when `array` is already at this device
+                 if the `array` comes from some parray's buffer, it may leads to a bug.
         Note: should be called within the current task context
         Note: data should be put in OUT/INOUT fields of spawn
         """

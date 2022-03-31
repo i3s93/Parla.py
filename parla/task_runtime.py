@@ -1405,6 +1405,9 @@ class Scheduler(ControllableThread, SchedulerContext):
         # Dictinary mapping data block to task lists.
         self._datablock_dict = defaultdict(list)
 
+        # A map of {Parent ID : [slices ID]} for parray
+        self._parray_slices_id_lookup = defaultdict(list)
+
         self._worker_threads = [WorkerThread(self, i) for i in range(n_threads)]
         for t in self._worker_threads:
             t.start()
@@ -1782,23 +1785,35 @@ class Scheduler(ControllableThread, SchedulerContext):
         self.incr_active_tasks()
         compute_task._add_dependency_mutex(datamove_task)
         target_data_id = target_data.ID
-        is_overlapped = False
+        target_data_parent_id = target_data.parent_ID
+        is_slices = (target_data_id != target_data_parent_id)  # is this data a sclies?
+
+        dep_task_list = []
         if target_data_id in self._datablock_dict:
             # Get task lists using the target data block.
-            dep_task_list = self._datablock_dict[target_data_id]
-            completed_tasks = []
-            for dep_task_tuple in dep_task_list:
-                dep_task_id = dep_task_tuple[0]
-                dep_task = dep_task_tuple[1]
-                # Only checks dependent tasks if they use the same data blocks.
-                if compute_task.is_dependent(dep_task):
-                    if not datamove_task._add_dependency_mutex(dep_task):
-                        completed_tasks.append(dep_task_id)
-            dep_task_list = [tuple(dt for dt in dep_task_list if dt[0] != ft) for ft in completed_tasks]
-        self._datablock_dict[target_data_id].append((str(compute_task.taskid), compute_task))
+            dep_task_list.extend(self._datablock_dict[target_data_id])
 
-        if target_data.parent_ID != target_data_id:
-            self._datablock_dict[target_data.parent_ID].append((str(compute_task.taskid), compute_task))
+        # Get task lists using ID of target data's parent
+        if is_slices:
+            # check parent
+            if target_data_parent_id in self._datablock_dict:
+                dep_task_list.extend(self._datablock_dict[target_data_parent_id])
+        elif target_data_id in self._parray_slices_id_lookup:
+            # check child
+            for child in self._parray_slices_id_lookup[target_data_id]:
+                if child in self._datablock_dict:
+                    dep_task_list.extend(self._datablock_dict[child])
+
+        for dep_task in set(dep_task_list):
+            # Only checks dependent tasks if they use the same data blocks.
+            if compute_task.is_dependent(dep_task):
+                datamove_task._add_dependency_mutex(dep_task)
+
+        self._datablock_dict[target_data_id].append(compute_task)
+
+        if is_slices:
+            self._datablock_dict[target_data_parent_id].append(compute_task)
+            self._parray_slices_id_lookup[target_data_parent_id].append(target_data_id)
 
         # If a task has no dependency after it is assigned to devices,
         # immediately enqueue a corresponding data movement task to
